@@ -1,58 +1,101 @@
 #!/usr/bin/env python3
-"""Monte Carlo Tree Search with UCB1 selection."""
-import math, random, sys, time
+"""mcts2 - Monte Carlo Tree Search for game playing."""
+import sys, math, random
 
 class MCTSNode:
     def __init__(self, state, parent=None, move=None):
-        self.state, self.parent, self.move = state, parent, move
-        self.children = []; self.visits = 0; self.value = 0.0
-        self.untried_moves = None
+        self.state = state
+        self.parent = parent
+        self.move = move
+        self.children = []
+        self.wins = 0
+        self.visits = 0
+        self.untried_moves = list(state.get_moves())
+
     def ucb1(self, c=1.414):
-        if self.visits == 0: return float('inf')
-        return self.value/self.visits + c * math.sqrt(math.log(self.parent.visits)/self.visits)
+        if self.visits == 0:
+            return float('inf')
+        return self.wins / self.visits + c * math.sqrt(math.log(self.parent.visits) / self.visits)
 
-class MCTS:
-    def __init__(self, game): self.game = game
-    def search(self, state, iterations=1000, time_limit=None):
-        root = MCTSNode(state); root.untried_moves = list(self.game.get_moves(state))
-        start = time.monotonic()
-        for _ in range(iterations):
-            if time_limit and time.monotonic() - start > time_limit: break
-            node = self._select(root)
-            node = self._expand(node)
-            result = self._simulate(node.state)
-            self._backprop(node, result)
-        best = max(root.children, key=lambda c: c.visits) if root.children else None
-        return best.move if best else None, root.visits
-    def _select(self, node):
-        while node.untried_moves is not None and not node.untried_moves and node.children:
-            node = max(node.children, key=lambda c: c.ucb1())
-        return node
-    def _expand(self, node):
+    def select(self):
+        return max(self.children, key=lambda c: c.ucb1())
+
+    def expand(self):
+        move = self.untried_moves.pop()
+        new_state = self.state.apply_move(move)
+        child = MCTSNode(new_state, self, move)
+        self.children.append(child)
+        return child
+
+    def backpropagate(self, result):
+        self.visits += 1
+        self.wins += result
+        if self.parent:
+            self.parent.backpropagate(1 - result)
+
+class SimpleGame:
+    def __init__(self, values=None, turn=0):
+        self.values = values or [random.random() for _ in range(4)]
+        self.turn = turn
+        self.chosen = []
+
+    def get_moves(self):
+        return list(range(len(self.values))) if len(self.chosen) < 2 else []
+
+    def apply_move(self, move):
+        g = SimpleGame(self.values, 1 - self.turn)
+        g.chosen = self.chosen + [move]
+        return g
+
+    def is_terminal(self):
+        return len(self.chosen) >= 2
+
+    def result(self, player):
+        if not self.is_terminal():
+            return 0.5
+        s = sum(self.values[c] for c in self.chosen)
+        return 1 if s > 1 else 0
+
+    def rollout(self):
+        state = self
+        while not state.is_terminal():
+            moves = state.get_moves()
+            state = state.apply_move(random.choice(moves))
+        return state.result(0)
+
+def mcts_search(root_state, iterations=100):
+    root = MCTSNode(root_state)
+    for _ in range(iterations):
+        node = root
+        while not node.untried_moves and node.children:
+            node = node.select()
         if node.untried_moves:
-            move = random.choice(node.untried_moves); node.untried_moves.remove(move)
-            new_state = self.game.apply(node.state, move)
-            child = MCTSNode(new_state, node, move)
-            child.untried_moves = list(self.game.get_moves(new_state))
-            node.children.append(child); return child
-        return node
-    def _simulate(self, state):
-        s = state
-        while True:
-            moves = self.game.get_moves(s)
-            if not moves: return self.game.evaluate(s)
-            s = self.game.apply(s, random.choice(moves))
-    def _backprop(self, node, result):
-        while node:
-            node.visits += 1; node.value += result; node = node.parent
+            node = node.expand()
+        result = node.state.rollout()
+        node.backpropagate(result)
+    if not root.children:
+        return None
+    return max(root.children, key=lambda c: c.visits).move
 
-# Demo: simple Nim
-class NimGame:
-    def get_moves(self, n): return [i for i in [1,2,3] if i <= n]
-    def apply(self, n, m): return n - m
-    def evaluate(self, n): return 1 if n == 0 else 0  # whoever took last wins
+def test():
+    random.seed(42)
+    game = SimpleGame([0.9, 0.1, 0.8, 0.2])
+    move = mcts_search(game, iterations=200)
+    assert move is not None
+    assert 0 <= move <= 3
+    root = MCTSNode(game)
+    assert root.visits == 0
+    assert len(root.untried_moves) == 4
+    child = root.expand()
+    assert len(root.children) == 1
+    assert len(root.untried_moves) == 3
+    child.backpropagate(1)
+    assert child.visits == 1
+    assert root.visits == 1
+    game2 = SimpleGame([0.0, 0.0, 0.0, 0.0])
+    move2 = mcts_search(game2, iterations=50)
+    assert move2 is not None
+    print("All tests passed!")
 
 if __name__ == "__main__":
-    mcts = MCTS(NimGame())
-    move, sims = mcts.search(15, iterations=5000)
-    print(f"Nim(15): MCTS suggests take {move} ({sims} simulations)")
+    test() if "--test" in sys.argv else print("mcts2: Monte Carlo Tree Search. Use --test")
